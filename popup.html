@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>标签组助手</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="card">
+      <section class="group-panel" aria-live="polite">
+        <div class="group-color" id="groupColor"></div>
+        <div class="group-copy">
+          <div class="eyebrow">当前标签组</div>
+          <div class="group-name" id="groupName">正在读取...</div>
+          <div class="group-meta" id="groupMeta"></div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button class="primary" id="pinButton" type="button" disabled>
+          标签组一键置顶
+        </button>
+        <button id="copyButton" type="button" disabled>
+          一键复制
+        </button>
+        <button id="archiveButton" type="button" disabled>
+          存档并收起
+        </button>
+      </div>
+
+      <div class="status" id="status" role="status"></div>
+
+      <section class="archive-section">
+        <div class="section-title">存档</div>
+        <div class="archive-list" id="archiveList"></div>
+        <div class="archive-empty" id="archiveEmpty">暂无存档</div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

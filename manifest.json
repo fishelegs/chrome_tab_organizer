@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "标签组助手",
+  "version": "1.2.0",
+  "description": "在弹出面板中复制、置顶、存档和恢复当前标签组。",
+  "permissions": [
+    "storage",
+    "tabs",
+    "tabGroups"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "标签组助手",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "duplicate-current-tab-group": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "复制当前标签页所在的标签组"
+    }
+  }
+}
