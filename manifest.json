@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "标签组助手",
-  "version": "1.2.0",
-  "description": "在弹出面板中复制、置顶、存档和恢复当前标签组。",
+  "version": "2.0.0",
+  "description": "复制、置顶，并通过跨设备同步和两层文件夹管理标签组存档。",
   "permissions": [
     "storage",
     "tabs",
