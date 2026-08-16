@@ -17,12 +17,24 @@
         </div>
       </section>
 
+      <details class="help-guide" open>
+        <summary>怎么操作？</summary>
+        <ol>
+          <li>先切换到目标标签页，再点击工具栏上的插件按钮。</li>
+          <li>单个标签组可以置顶、复制或存档；置顶会删除原组，存档会关闭原组。</li>
+          <li>合并时点击“合并标签组并去重”，选择同一窗口中的至少两个标签组。</li>
+        </ol>
+      </details>
+
       <div class="actions">
-        <button class="primary" id="pinButton" type="button" disabled>
+        <button class="primary" id="pinButton" type="button" title="复制到窗口最前面，然后删除原标签组" disabled>
           标签组一键置顶
         </button>
-        <button id="copyButton" type="button" disabled>
+        <button id="copyButton" type="button" title="保留原标签组，在右侧创建一个副本" disabled>
           一键复制
+        </button>
+        <button id="mergeButton" type="button" title="选择多个标签组，合并到第一个选中的标签组并去重" disabled>
+          合并标签组并去重
         </button>
         <label class="archive-destination" for="archiveFolderSelect">
           <span>存入</span>
@@ -30,12 +42,34 @@
             <option value="">未分类</option>
           </select>
         </label>
-        <button id="archiveButton" type="button" disabled>
+        <button id="archiveButton" type="button" title="保存到插件存档，然后关闭当前标签组" disabled>
           存档并收起
         </button>
       </div>
 
+      <div class="action-note">提示：复制不会修改原组；置顶和存档会改变原组。</div>
+
       <div class="status" id="status" role="status"></div>
+
+      <section class="merge-section" id="mergeSection" hidden>
+        <div class="section-heading merge-heading">
+          <div>
+            <div class="section-title">合并标签组</div>
+            <div class="sync-status">选择至少两个标签组；相同网址只保留第一次出现的标签页</div>
+          </div>
+          <button class="compact" id="cancelMergeButton" type="button">取消</button>
+        </div>
+        <div class="merge-selection-status" id="mergeSelectionStatus" role="status"></div>
+        <div class="merge-target-hint">第一个选中的标签组会作为结果组；其他选中组的标签页会移入其中。</div>
+        <div class="merge-group-list" id="mergeGroupList"></div>
+        <label class="merge-title" for="mergeTitleInput">
+          <span>结果名称</span>
+          <input id="mergeTitleInput" type="text" maxlength="100" placeholder="沿用第一个标签组名称">
+        </label>
+        <button class="primary" id="confirmMergeButton" type="button" disabled>
+          合并并去重
+        </button>
+      </section>
 
       <section class="archive-section">
         <div class="section-heading">
