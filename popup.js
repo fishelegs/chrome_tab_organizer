@@ -21,7 +21,9 @@ const state = {
   currentGroupId: null,
   mergeWindowId: null,
   selectedMergeGroupIds: new Set(),
-  mergeTitleTouched: false
+  mergeTitleTouched: false,
+  exportData: null,
+  exportFormat: "markdown"
 };
 
 const groupColor = document.getElementById("groupColor");
@@ -43,7 +45,16 @@ const mergeSelectionStatus = document.getElementById("mergeSelectionStatus");
 const mergeTitleInput = document.getElementById("mergeTitleInput");
 const cancelMergeButton = document.getElementById("cancelMergeButton");
 const confirmMergeButton = document.getElementById("confirmMergeButton");
+const exportButton = document.getElementById("exportButton");
+const exportSection = document.getElementById("exportSection");
+const exportScope = document.getElementById("exportScope");
+const exportMeta = document.getElementById("exportMeta");
+const exportFormatSelect = document.getElementById("exportFormatSelect");
+const exportPreview = document.getElementById("exportPreview");
+const copyExportButton = document.getElementById("copyExportButton");
+const cancelExportButton = document.getElementById("cancelExportButton");
 let storageRefreshTimer;
+let copyFeedbackTimer;
 
 document.addEventListener("DOMContentLoaded", initPopup);
 pinButton.addEventListener("click", () => runCurrentGroupAction("pin-current-tab-group", "正在置顶..."));
@@ -55,6 +66,13 @@ mergeGroupList.addEventListener("change", handleMergeGroupChange);
 mergeTitleInput.addEventListener("input", () => {
   state.mergeTitleTouched = true;
 });
+exportButton.addEventListener("click", toggleExportSection);
+cancelExportButton.addEventListener("click", closeExportSection);
+exportFormatSelect.addEventListener("change", () => {
+  state.exportFormat = exportFormatSelect.value;
+  renderExportPreview();
+});
+copyExportButton.addEventListener("click", copyExportPreview);
 archiveButton.addEventListener("click", () => {
   runCurrentGroupAction("archive-current-tab-group", "正在存档...", {
     folderId: archiveFolderSelect.value || null
@@ -121,6 +139,7 @@ async function runCurrentGroupAction(type, busyText, extra = {}) {
     return;
   }
 
+  closeExportSection();
   await withBusyState(busyText, async () => {
     const response = await chrome.runtime.sendMessage({ type, ...extra });
     assertSuccessfulResponse(response);
@@ -243,11 +262,100 @@ async function toggleMergeSection() {
     closeMergeSection();
     return;
   }
+  closeExportSection();
   await refreshMergeGroups({ silent: true });
   state.mergeTitleTouched = false;
   renderMergeGroups();
   mergeSection.hidden = false;
   syncButtons();
+}
+
+async function toggleExportSection() {
+  if (state.busy) {
+    return;
+  }
+  if (!exportSection.hidden) {
+    closeExportSection();
+    return;
+  }
+
+  closeMergeSection();
+  await withBusyState("正在读取标签页...", async () => {
+    const response = await chrome.runtime.sendMessage({ type: "get-tab-export-data" });
+    assertSuccessfulResponse(response, "无法读取标签页");
+    state.exportData = response;
+    state.exportFormat = exportFormatSelect.value || "markdown";
+    renderExportPreview();
+    exportSection.hidden = false;
+    setStatus("");
+  });
+}
+
+function closeExportSection() {
+  if (state.busy) {
+    return;
+  }
+  exportSection.hidden = true;
+  state.exportData = null;
+  exportPreview.value = "";
+  exportScope.textContent = "";
+  exportMeta.textContent = "";
+  copyExportButton.disabled = true;
+  copyExportButton.textContent = "复制结果";
+  syncButtons();
+}
+
+function renderExportPreview() {
+  const data = state.exportData;
+  const tabs = data?.tabs || [];
+  const scope = data?.scope || {};
+  const scopeTitle = scope.type === "group"
+    ? `标签组：${scope.title || "未命名标签组"}`
+    : "当前窗口全部标签页";
+
+  exportScope.textContent = scopeTitle;
+  exportMeta.textContent = `${tabs.length} 个标签页 · ${TabExportFormatter.getFormatLabel(state.exportFormat)}`;
+  exportFormatSelect.value = state.exportFormat;
+  exportPreview.value = TabExportFormatter.formatTabs(tabs, state.exportFormat);
+  copyExportButton.disabled = state.busy || tabs.length === 0 || !exportPreview.value;
+  syncButtons();
+}
+
+async function copyExportPreview() {
+  if (state.busy || !state.exportData?.tabs?.length || !exportPreview.value) {
+    return;
+  }
+
+  try {
+    await copyText(exportPreview.value);
+    copyExportButton.textContent = "已复制";
+    setStatus(`已复制 ${state.exportData.tabs.length} 个标签页`, "success");
+    clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = setTimeout(() => {
+      copyExportButton.textContent = "复制结果";
+    }, 1400);
+  } catch (error) {
+    setStatus(`复制失败：${getErrorMessage(error)}`, "error");
+  }
+}
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (error) {
+      if (typeof document.execCommand !== "function") {
+        throw error;
+      }
+    }
+  }
+
+  exportPreview.focus();
+  exportPreview.select();
+  if (!document.execCommand("copy")) {
+    throw new Error("浏览器未提供剪贴板权限");
+  }
 }
 
 function closeMergeSection() {
@@ -535,6 +643,7 @@ async function createFolder() {
 }
 
 async function runLibraryAction(message, busyText) {
+  closeExportSection();
   await withBusyState(busyText, async () => {
     const response = await chrome.runtime.sendMessage(message);
     assertSuccessfulResponse(response);
@@ -562,6 +671,7 @@ function syncButtons() {
   pinButton.disabled = currentGroupDisabled;
   copyButton.disabled = currentGroupDisabled;
   mergeButton.disabled = state.busy || state.tabGroups.length < 2;
+  exportButton.disabled = state.busy;
   archiveButton.disabled = currentGroupDisabled;
   archiveFolderSelect.disabled = state.busy;
   createFolderButton.disabled = state.busy;
@@ -570,6 +680,10 @@ function syncButtons() {
   confirmMergeButton.disabled = state.busy || selectedMergeCount < 2;
   confirmMergeButton.textContent = selectedMergeCount < 2 ? "请选择至少两个标签组" : "合并并去重";
   mergeTitleInput.disabled = state.busy || state.tabGroups.length < 2;
+  cancelExportButton.disabled = state.busy;
+  exportFormatSelect.disabled = state.busy || !state.exportData;
+  exportPreview.disabled = state.busy || !state.exportData;
+  copyExportButton.disabled = state.busy || !state.exportData?.tabs?.length || !exportPreview.value;
   mergeGroupList.querySelectorAll("input[data-group-id]").forEach((control) => {
     control.disabled = state.busy;
   });

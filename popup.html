@@ -23,6 +23,7 @@
           <li>先切换到目标标签页，再点击工具栏上的插件按钮。</li>
           <li>单个标签组可以置顶、复制或存档；置顶会删除原组，存档会关闭原组。</li>
           <li>合并时点击“合并标签组并去重”，选择同一窗口中的至少两个标签组。</li>
+          <li>导出时可选择当前标签组或当前窗口，并复制 YAML、Markdown 或 TXT 结果。</li>
         </ol>
       </details>
 
@@ -35,6 +36,9 @@
         </button>
         <button id="mergeButton" type="button" title="选择多个标签组，合并到第一个选中的标签组并去重" disabled>
           合并标签组并去重
+        </button>
+        <button id="exportButton" type="button" title="预览并复制当前标签组或窗口的标题和 URL">
+          导出标签页
         </button>
         <label class="archive-destination" for="archiveFolderSelect">
           <span>存入</span>
@@ -71,6 +75,30 @@
         </button>
       </section>
 
+      <section class="export-section" id="exportSection" hidden>
+        <div class="section-heading export-heading">
+          <div>
+            <div class="section-title">导出标签页</div>
+            <div class="sync-status" id="exportScope"></div>
+          </div>
+          <button class="compact" id="cancelExportButton" type="button">取消</button>
+        </div>
+        <div class="export-meta" id="exportMeta"></div>
+        <label class="export-format" for="exportFormatSelect">
+          <span>格式</span>
+          <select id="exportFormatSelect">
+            <option value="markdown">Markdown</option>
+            <option value="yaml">YAML</option>
+            <option value="txt">TXT</option>
+          </select>
+        </label>
+        <textarea id="exportPreview" class="export-preview" readonly spellcheck="false" aria-label="导出预览"></textarea>
+        <div class="export-actions">
+          <button class="primary" id="copyExportButton" type="button" disabled>复制结果</button>
+        </div>
+        <div class="export-note">仅导出标签页标题和 URL，不包含网页正文；结果按标签栏顺序排列。</div>
+      </section>
+
       <section class="archive-section">
         <div class="section-heading">
           <div>
@@ -84,6 +112,7 @@
       </section>
     </main>
 
+    <script src="export-format.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

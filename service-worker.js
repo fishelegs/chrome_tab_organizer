@@ -102,6 +102,10 @@ async function handleMessage(message) {
     };
   }
 
+  if (message.type === "get-tab-export-data") {
+    return { ok: true, ...(await getTabExportData()) };
+  }
+
   const activeTab = await getActiveTab();
 
   if (message.type === "duplicate-current-tab-group") {
@@ -192,6 +196,50 @@ async function getTabGroupsForWindow(windowId) {
       firstIndex: firstIndexByGroup.get(group.id) ?? Number.MAX_SAFE_INTEGER
     }))
     .sort((left, right) => left.firstIndex - right.firstIndex || left.id - right.id);
+}
+
+async function getTabExportData() {
+  const activeTab = await getActiveTab({ required: false });
+  if (!activeTab || activeTab.windowId === undefined || activeTab.windowId === null) {
+    throw new Error("没有找到当前浏览器窗口");
+  }
+
+  const windowId = activeTab.windowId;
+  const groupId = activeTab.groupId;
+  const isGrouped = groupId !== undefined && groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE;
+  let scope;
+  let tabs;
+
+  if (isGrouped) {
+    const [group, groupTabs] = await Promise.all([
+      chrome.tabGroups.get(groupId),
+      chrome.tabs.query({ groupId, windowId })
+    ]);
+    scope = {
+      type: "group",
+      groupId,
+      windowId,
+      title: group.title || ""
+    };
+    tabs = groupTabs;
+  } else {
+    scope = {
+      type: "window",
+      windowId,
+      title: ""
+    };
+    tabs = await chrome.tabs.query({ windowId });
+  }
+
+  return {
+    scope,
+    tabs: sortTabsByIndex(tabs).map((tab) => ({
+      id: tab.id,
+      index: tab.index,
+      title: tab.title || "",
+      url: tab.pendingUrl || tab.url || ""
+    }))
+  };
 }
 
 async function mergeTabGroups(message = {}) {
