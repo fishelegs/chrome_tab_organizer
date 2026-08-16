@@ -47,6 +47,7 @@ function loadWorker(overrides = {}) {
     },
     tabGroups: {
       TAB_GROUP_ID_NONE: -1,
+      query: async () => [{ id: 7, windowId: 3, title: "工作", color: "blue", collapsed: true }],
       get: async () => ({ id: 7, windowId: 3, title: "工作", color: "blue", collapsed: true }),
       update: async (...args) => calls.push(["update", ...args])
     },
@@ -189,6 +190,63 @@ async function testPinToFront() {
     "tabUpdate",
     102,
     { active: true }
+  ]);
+}
+
+async function testMergeTabGroupsDeduplicatesUrls() {
+  const groups = [
+    { id: 7, windowId: 3, title: "工作", color: "blue", collapsed: false },
+    { id: 8, windowId: 3, title: "资料", color: "green", collapsed: true }
+  ];
+  const tabsByGroup = {
+    7: [
+      { id: 11, index: 2, title: "One", url: "https://example.com/one", groupId: 7 },
+      { id: 12, index: 3, title: "Two", url: "https://example.com/two", groupId: 7 }
+    ],
+    8: [
+      { id: 21, index: 5, title: "Two copy", url: "https://example.com/two", groupId: 8 },
+      { id: 22, index: 6, title: "Three", url: "https://example.com/three", groupId: 8 },
+      { id: 23, index: 7, title: "Settings", url: "chrome://settings/", groupId: 8 },
+      { id: 24, index: 8, title: "Settings copy", url: "chrome://settings/", groupId: 8 }
+    ]
+  };
+  const allTabs = Object.values(tabsByGroup).flat();
+  const { context, calls } = loadWorker({
+    tabs: {
+      query: async (details) => {
+        if (details?.active) {
+          return [{ id: 12, windowId: 3, index: 3, groupId: 7, url: "https://example.com/two" }];
+        }
+        if (details?.groupId !== undefined) {
+          return tabsByGroup[details.groupId] || [];
+        }
+        return allTabs;
+      }
+    },
+    tabGroups: {
+      query: async () => groups
+    }
+  });
+
+  const result = await context.mergeTabGroups({
+    groupIds: [7, 8],
+    windowId: 3,
+    title: "合并后"
+  });
+
+  assert.equal(result.groupCount, 2);
+  assert.equal(result.originalTabCount, 6);
+  assert.equal(result.mergedTabCount, 5);
+  assert.equal(result.duplicateCount, 1);
+  assert.deepEqual(plain(calls.find(([name]) => name === "group")), [
+    "group",
+    { tabIds: [22, 23, 24], groupId: 7 }
+  ]);
+  assert.deepEqual(plain(calls.find(([name]) => name === "remove")), ["remove", [21]]);
+  assert.deepEqual(plain(calls.find(([name]) => name === "update")), [
+    "update",
+    7,
+    { title: "合并后", color: "blue", collapsed: false }
   ]);
 }
 
@@ -388,6 +446,7 @@ Promise.resolve()
   .then(testSuccessfulCopy)
   .then(testUngroupedTab)
   .then(testPinToFront)
+  .then(testMergeTabGroupsDeduplicatesUrls)
   .then(testRollbackOnFailure)
   .then(testArchiveCurrentGroupUsesSyncChunks)
   .then(testSyncFailureFallsBackToLocal)

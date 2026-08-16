@@ -88,6 +88,20 @@ async function handleMessage(message) {
     return archive ? { ok: true, message: "已移动存档" } : { ok: false, error: "没有找到这条存档" };
   }
 
+  if (message.type === "get-tab-groups") {
+    const groups = await getTabGroupsForWindow(message.windowId);
+    return { ok: true, groups };
+  }
+
+  if (message.type === "merge-tab-groups") {
+    const result = await mergeTabGroups(message);
+    return {
+      ok: true,
+      result,
+      message: `已合并 ${result.groupCount} 个标签组，保留 ${result.mergedTabCount} 个标签页，去重 ${result.duplicateCount} 个`
+    };
+  }
+
   const activeTab = await getActiveTab();
 
   if (message.type === "duplicate-current-tab-group") {
@@ -136,6 +150,181 @@ async function pinTabGroupToFront(activeTab) {
   await chrome.tabs.remove(result.sourceTabIds);
   await showBadge("✓", "#188038", result.activeCreatedTabId);
   return result;
+}
+
+async function getTabGroupsForWindow(windowId) {
+  let resolvedWindowId = windowId;
+  if (resolvedWindowId === undefined || resolvedWindowId === null) {
+    const activeTab = await getActiveTab({ required: false });
+    resolvedWindowId = activeTab?.windowId;
+  }
+
+  if (resolvedWindowId === undefined || resolvedWindowId === null) {
+    return [];
+  }
+
+  const [groups, tabs] = await Promise.all([
+    chrome.tabGroups.query({ windowId: resolvedWindowId }),
+    chrome.tabs.query({ windowId: resolvedWindowId })
+  ]);
+  const firstIndexByGroup = new Map();
+  const countByGroup = new Map();
+
+  for (const tab of tabs) {
+    if (tab.groupId === undefined || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+      continue;
+    }
+    countByGroup.set(tab.groupId, (countByGroup.get(tab.groupId) || 0) + 1);
+    const currentFirstIndex = firstIndexByGroup.get(tab.groupId);
+    if (currentFirstIndex === undefined || tab.index < currentFirstIndex) {
+      firstIndexByGroup.set(tab.groupId, tab.index);
+    }
+  }
+
+  return groups
+    .map((group) => ({
+      id: group.id,
+      windowId: group.windowId ?? resolvedWindowId,
+      title: group.title || "",
+      color: group.color || "grey",
+      collapsed: Boolean(group.collapsed),
+      tabCount: countByGroup.get(group.id) || 0,
+      firstIndex: firstIndexByGroup.get(group.id) ?? Number.MAX_SAFE_INTEGER
+    }))
+    .sort((left, right) => left.firstIndex - right.firstIndex || left.id - right.id);
+}
+
+async function mergeTabGroups(message = {}) {
+  const groupIds = normalizeGroupIds(message.groupIds);
+  if (groupIds.length < 2) {
+    throw new Error("至少选择两个标签组");
+  }
+
+  let windowId = message.windowId;
+  if (windowId === undefined || windowId === null) {
+    const activeTab = await getActiveTab({ required: false });
+    windowId = activeTab?.windowId;
+  }
+  if (windowId === undefined || windowId === null) {
+    throw new Error("没有找到要合并的浏览器窗口");
+  }
+
+  const groups = await chrome.tabGroups.query({ windowId });
+  const selectedGroups = groups.filter((group) => groupIds.includes(group.id));
+  if (selectedGroups.length !== groupIds.length) {
+    throw new Error("部分标签组已经不存在，请刷新后重试");
+  }
+
+  const snapshots = await Promise.all(selectedGroups.map(async (group) => ({
+    group,
+    tabs: sortTabsByIndex(await chrome.tabs.query({ groupId: group.id, windowId }))
+  })));
+  const allTabs = snapshots
+    .flatMap((snapshot) => snapshot.tabs)
+    .sort((left, right) => left.index - right.index || left.id - right.id);
+  if (allTabs.length === 0) {
+    throw new Error("选中的标签组中没有可合并的标签页");
+  }
+
+  const seenUrls = new Set();
+  const uniqueTabs = [];
+  const duplicateTabIds = [];
+  for (const tab of allTabs) {
+    const key = getMergeDedupeKey(tab);
+    if (key && seenUrls.has(key)) {
+      duplicateTabIds.push(tab.id);
+      continue;
+    }
+    if (key) {
+      seenUrls.add(key);
+    }
+    uniqueTabs.push(tab);
+  }
+
+  if (uniqueTabs.length === 0) {
+    throw new Error("没有可保留的标签页");
+  }
+
+  const targetGroup = selectedGroups.find((group) => group.id === groupIds[0]) || selectedGroups[0];
+  const title = normalizeMergeTitle(message.title, targetGroup.title);
+  const uniqueTabIds = uniqueTabs.map((tab) => tab.id);
+  const targetTabIds = new Set(
+    snapshots
+      .find((snapshot) => snapshot.group.id === targetGroup.id)
+      ?.tabs.map((tab) => tab.id) || []
+  );
+  const tabIdsToMove = uniqueTabIds.filter((tabId) => !targetTabIds.has(tabId));
+
+  try {
+    if (tabIdsToMove.length > 0) {
+      await chrome.tabs.group({ tabIds: tabIdsToMove, groupId: targetGroup.id });
+    }
+    if (duplicateTabIds.length > 0) {
+      await chrome.tabs.remove(duplicateTabIds);
+    }
+    await chrome.tabGroups.update(targetGroup.id, {
+      title,
+      color: targetGroup.color,
+      collapsed: Boolean(targetGroup.collapsed)
+    });
+  } catch (error) {
+    await restoreMergedTabGroups(snapshots, targetGroup.id).catch(() => {});
+    throw error;
+  }
+
+  const badgeTabId = uniqueTabIds[0];
+  await showBadge("合", "#188038", badgeTabId);
+  return {
+    targetGroupId: targetGroup.id,
+    windowId,
+    groupCount: selectedGroups.length,
+    originalTabCount: allTabs.length,
+    mergedTabCount: uniqueTabs.length,
+    duplicateCount: duplicateTabIds.length,
+    removedTabIds: duplicateTabIds,
+    title
+  };
+}
+
+async function restoreMergedTabGroups(snapshots, targetGroupId) {
+  const tabsByGroup = new Map();
+  for (const snapshot of snapshots) {
+    const tabIds = snapshot.tabs.map((tab) => tab.id).filter(Boolean);
+    if (snapshot.group.id !== targetGroupId && tabIds.length > 0) {
+      tabsByGroup.set(snapshot.group.id, tabIds);
+    }
+  }
+
+  for (const [groupId, tabIds] of tabsByGroup) {
+    await chrome.tabs.group({ tabIds, groupId });
+  }
+}
+
+function normalizeGroupIds(groupIds) {
+  if (!Array.isArray(groupIds)) {
+    return [];
+  }
+  return [...new Set(groupIds.map((groupId) => Number(groupId)).filter((groupId) => Number.isInteger(groupId)))];
+}
+
+function sortTabsByIndex(tabs) {
+  return [...tabs].sort((left, right) => left.index - right.index || left.id - right.id);
+}
+
+function getMergeDedupeKey(tab) {
+  const url = tab?.pendingUrl || tab?.url;
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return null;
+  }
+  return url;
+}
+
+function normalizeMergeTitle(title, fallback) {
+  const cleanTitle = String(title ?? "").trim();
+  if (cleanTitle.length > 100) {
+    throw new Error("合并后的标签组名称不能超过 100 个字符");
+  }
+  return cleanTitle || fallback || "合并标签组";
 }
 
 async function cloneTabGroup(activeTab, options = {}) {

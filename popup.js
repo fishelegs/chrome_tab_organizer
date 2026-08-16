@@ -16,7 +16,12 @@ const state = {
   archives: [],
   folders: [],
   storageInfo: null,
-  collapsedFolders: new Set()
+  collapsedFolders: new Set(),
+  tabGroups: [],
+  currentGroupId: null,
+  mergeWindowId: null,
+  selectedMergeGroupIds: new Set(),
+  mergeTitleTouched: false
 };
 
 const groupColor = document.getElementById("groupColor");
@@ -26,16 +31,30 @@ const statusText = document.getElementById("status");
 const syncStatus = document.getElementById("syncStatus");
 const pinButton = document.getElementById("pinButton");
 const copyButton = document.getElementById("copyButton");
+const mergeButton = document.getElementById("mergeButton");
 const archiveButton = document.getElementById("archiveButton");
 const archiveFolderSelect = document.getElementById("archiveFolderSelect");
 const createFolderButton = document.getElementById("createFolderButton");
 const archiveList = document.getElementById("archiveList");
 const archiveEmpty = document.getElementById("archiveEmpty");
+const mergeSection = document.getElementById("mergeSection");
+const mergeGroupList = document.getElementById("mergeGroupList");
+const mergeSelectionStatus = document.getElementById("mergeSelectionStatus");
+const mergeTitleInput = document.getElementById("mergeTitleInput");
+const cancelMergeButton = document.getElementById("cancelMergeButton");
+const confirmMergeButton = document.getElementById("confirmMergeButton");
 let storageRefreshTimer;
 
 document.addEventListener("DOMContentLoaded", initPopup);
 pinButton.addEventListener("click", () => runCurrentGroupAction("pin-current-tab-group", "正在置顶..."));
 copyButton.addEventListener("click", () => runCurrentGroupAction("duplicate-current-tab-group", "正在复制..."));
+mergeButton.addEventListener("click", toggleMergeSection);
+cancelMergeButton.addEventListener("click", closeMergeSection);
+confirmMergeButton.addEventListener("click", mergeSelectedGroups);
+mergeGroupList.addEventListener("change", handleMergeGroupChange);
+mergeTitleInput.addEventListener("input", () => {
+  state.mergeTitleTouched = true;
+});
 archiveButton.addEventListener("click", () => {
   runCurrentGroupAction("archive-current-tab-group", "正在存档...", {
     folderId: archiveFolderSelect.value || null
@@ -55,7 +74,8 @@ if (chrome.storage?.onChanged) {
 }
 
 async function initPopup() {
-  await Promise.all([refreshCurrentGroup(), refreshArchives()]);
+  await refreshCurrentGroup();
+  await Promise.all([refreshArchives(), refreshMergeGroups()]);
 }
 
 async function refreshCurrentGroup() {
@@ -80,6 +100,7 @@ async function refreshCurrentGroup() {
 
 function renderGroup(group, tabCount) {
   state.hasGroup = true;
+  state.currentGroupId = group.id;
   groupColor.style.background = GROUP_COLOR_MAP[group.color] || GROUP_COLOR_MAP.grey;
   groupName.textContent = group.title || "未命名标签组";
   groupMeta.textContent = `${tabCount} 个标签页`;
@@ -88,6 +109,7 @@ function renderGroup(group, tabCount) {
 
 function renderNoGroup() {
   state.hasGroup = false;
+  state.currentGroupId = null;
   groupColor.style.background = GROUP_COLOR_MAP.grey;
   groupName.textContent = "当前没有标签组";
   groupMeta.textContent = "请选择分组内的任意标签页";
@@ -102,8 +124,162 @@ async function runCurrentGroupAction(type, busyText, extra = {}) {
   await withBusyState(busyText, async () => {
     const response = await chrome.runtime.sendMessage({ type, ...extra });
     assertSuccessfulResponse(response);
-    await Promise.all([refreshCurrentGroup(), refreshArchives({ silent: true })]);
+    await Promise.all([refreshCurrentGroup(), refreshArchives({ silent: true }), refreshMergeGroups({ silent: true })]);
     setStatus(response.message || "完成", "success");
+  });
+}
+
+async function refreshMergeGroups(options = {}) {
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    state.mergeWindowId = activeTab?.windowId ?? null;
+    const response = await chrome.runtime.sendMessage({
+      type: "get-tab-groups",
+      windowId: state.mergeWindowId
+    });
+    assertSuccessfulResponse(response, "无法读取标签组");
+    state.tabGroups = response.groups || [];
+
+    const availableIds = new Set(state.tabGroups.map((group) => group.id));
+    state.selectedMergeGroupIds = new Set(
+      [...state.selectedMergeGroupIds].filter((groupId) => availableIds.has(groupId))
+    );
+    if (state.selectedMergeGroupIds.size === 0 && state.currentGroupId !== null && availableIds.has(state.currentGroupId)) {
+      state.selectedMergeGroupIds.add(state.currentGroupId);
+    }
+    renderMergeGroups();
+  } catch (error) {
+    state.tabGroups = [];
+    state.selectedMergeGroupIds.clear();
+    renderMergeGroups();
+    if (!options.silent) {
+      setStatus(getErrorMessage(error), "error");
+    }
+  }
+}
+
+function renderMergeGroups() {
+  mergeGroupList.textContent = "";
+  renderMergeSelectionStatus();
+  if (state.tabGroups.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "merge-empty";
+    empty.textContent = "当前窗口没有可合并的标签组";
+    mergeGroupList.append(empty);
+    syncButtons();
+    return;
+  }
+
+  for (const group of state.tabGroups) {
+    const label = document.createElement("label");
+    label.className = "merge-group-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.groupId = String(group.id);
+    checkbox.checked = state.selectedMergeGroupIds.has(group.id);
+
+    const color = document.createElement("span");
+    color.className = "merge-group-color";
+    color.style.background = GROUP_COLOR_MAP[group.color] || GROUP_COLOR_MAP.grey;
+
+    const copy = document.createElement("span");
+    copy.className = "merge-group-copy";
+    const name = document.createElement("span");
+    name.className = "merge-group-name";
+    name.textContent = group.title || "未命名标签组";
+    const meta = document.createElement("span");
+    meta.className = "merge-group-meta";
+    meta.textContent = `${group.tabCount || 0} 个标签页${group.id === state.currentGroupId ? " · 当前标签组" : ""}`;
+    copy.append(name, meta);
+
+    label.append(checkbox, color, copy);
+    mergeGroupList.append(label);
+  }
+
+  if (!state.mergeTitleTouched) {
+    const firstSelected = state.tabGroups.find((group) => state.selectedMergeGroupIds.has(group.id));
+    mergeTitleInput.value = firstSelected?.title || "";
+  }
+  syncButtons();
+}
+
+function handleMergeGroupChange(event) {
+  const checkbox = event.target.closest("input[data-group-id]");
+  if (!checkbox) {
+    return;
+  }
+  const groupId = Number(checkbox.dataset.groupId);
+  if (checkbox.checked) {
+    state.selectedMergeGroupIds.add(groupId);
+  } else {
+    state.selectedMergeGroupIds.delete(groupId);
+  }
+  renderMergeSelectionStatus();
+  if (!state.mergeTitleTouched) {
+    const firstSelected = state.tabGroups.find((group) => state.selectedMergeGroupIds.has(group.id));
+    mergeTitleInput.value = firstSelected?.title || "";
+  }
+  syncButtons();
+}
+
+function renderMergeSelectionStatus() {
+  const selectedCount = state.selectedMergeGroupIds.size;
+  if (selectedCount < 2) {
+    const remaining = 2 - selectedCount;
+    mergeSelectionStatus.textContent = `已选择 ${selectedCount} 个标签组，还需选择 ${remaining} 个`;
+    mergeSelectionStatus.className = "merge-selection-status pending";
+    return;
+  }
+  mergeSelectionStatus.textContent = `已选择 ${selectedCount} 个标签组，可以开始合并`;
+  mergeSelectionStatus.className = "merge-selection-status ready";
+}
+
+async function toggleMergeSection() {
+  if (state.busy) {
+    return;
+  }
+  if (!mergeSection.hidden) {
+    closeMergeSection();
+    return;
+  }
+  await refreshMergeGroups({ silent: true });
+  state.mergeTitleTouched = false;
+  renderMergeGroups();
+  mergeSection.hidden = false;
+  syncButtons();
+}
+
+function closeMergeSection() {
+  if (state.busy) {
+    return;
+  }
+  mergeSection.hidden = true;
+  state.mergeTitleTouched = false;
+  syncButtons();
+}
+
+async function mergeSelectedGroups() {
+  if (state.busy || state.selectedMergeGroupIds.size < 2) {
+    return;
+  }
+
+  await withBusyState("正在合并并去重...", async () => {
+    const response = await chrome.runtime.sendMessage({
+      type: "merge-tab-groups",
+      groupIds: [...state.selectedMergeGroupIds],
+      windowId: state.mergeWindowId,
+      title: mergeTitleInput.value.trim()
+    });
+    assertSuccessfulResponse(response);
+    mergeSection.hidden = true;
+    state.mergeTitleTouched = false;
+    await Promise.all([
+      refreshCurrentGroup(),
+      refreshMergeGroups({ silent: true }),
+      refreshArchives({ silent: true })
+    ]);
+    setStatus(response.message || "合并完成", "success");
   });
 }
 
@@ -362,7 +538,7 @@ async function runLibraryAction(message, busyText) {
   await withBusyState(busyText, async () => {
     const response = await chrome.runtime.sendMessage(message);
     assertSuccessfulResponse(response);
-    await Promise.all([refreshCurrentGroup(), refreshArchives({ silent: true })]);
+    await Promise.all([refreshCurrentGroup(), refreshArchives({ silent: true }), refreshMergeGroups({ silent: true })]);
     setStatus(response.message || "完成", "success");
   });
 }
@@ -385,9 +561,18 @@ function syncButtons() {
   const currentGroupDisabled = !state.hasGroup || state.busy;
   pinButton.disabled = currentGroupDisabled;
   copyButton.disabled = currentGroupDisabled;
+  mergeButton.disabled = state.busy || state.tabGroups.length < 2;
   archiveButton.disabled = currentGroupDisabled;
   archiveFolderSelect.disabled = state.busy;
   createFolderButton.disabled = state.busy;
+  cancelMergeButton.disabled = state.busy;
+  const selectedMergeCount = state.selectedMergeGroupIds.size;
+  confirmMergeButton.disabled = state.busy || selectedMergeCount < 2;
+  confirmMergeButton.textContent = selectedMergeCount < 2 ? "请选择至少两个标签组" : "合并并去重";
+  mergeTitleInput.disabled = state.busy || state.tabGroups.length < 2;
+  mergeGroupList.querySelectorAll("input[data-group-id]").forEach((control) => {
+    control.disabled = state.busy;
+  });
   archiveList.querySelectorAll("button, select").forEach((control) => {
     control.disabled = state.busy || (control.dataset.action === "restore-folder" && control.dataset.empty === "true");
   });
