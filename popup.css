@@ -308,6 +308,72 @@ button.primary:disabled {
   font-size: 12px;
 }
 
+.export-section {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #d7e3f6;
+  border-radius: 9px;
+  background: #f8fbff;
+}
+
+.export-section[hidden] {
+  display: none;
+}
+
+.export-heading {
+  margin-bottom: 7px;
+}
+
+.export-meta {
+  margin-bottom: 7px;
+  color: #5f6368;
+  font-size: 11px;
+}
+
+.export-format {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: center;
+  color: #5f6368;
+  font-size: 11px;
+}
+
+.export-format select {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.export-preview {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 150px;
+  max-height: 260px;
+  margin-top: 8px;
+  padding: 8px;
+  resize: vertical;
+  border: 1px solid #cdd5df;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #202124;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.export-actions {
+  margin-top: 8px;
+}
+
+.export-note {
+  margin-top: 7px;
+  color: #7b8188;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .archive-section {
   margin-top: 12px;
   padding-top: 12px;

@@ -250,6 +250,69 @@ async function testMergeTabGroupsDeduplicatesUrls() {
   ]);
 }
 
+async function testExportCurrentGroupTabsInStripOrder() {
+  const groupedTabs = [
+    { id: 12, index: 4, title: "第二页", url: "https://example.com/two", groupId: 7, windowId: 3 },
+    { id: 11, index: 2, title: "第一页", url: "https://example.com/one", groupId: 7, windowId: 3 },
+    { id: 13, index: 5, title: "特殊页", url: "chrome://settings/", groupId: 7, windowId: 3 }
+  ];
+  const { context } = loadWorker({
+    tabs: {
+      query: async (details) => {
+        if (details?.active) {
+          return [{ id: 12, windowId: 3, index: 4, groupId: 7, url: "https://example.com/two" }];
+        }
+        if (details?.groupId === 7) {
+          return groupedTabs;
+        }
+        return groupedTabs;
+      }
+    },
+    tabGroups: {
+      get: async () => ({ id: 7, windowId: 3, title: "工作", color: "blue", collapsed: false })
+    }
+  });
+
+  const result = await context.getTabExportData();
+  assert.deepEqual(plain(result.scope), {
+    type: "group",
+    groupId: 7,
+    windowId: 3,
+    title: "工作"
+  });
+  assert.deepEqual(plain(result.tabs), [
+    { id: 11, index: 2, title: "第一页", url: "https://example.com/one" },
+    { id: 12, index: 4, title: "第二页", url: "https://example.com/two" },
+    { id: 13, index: 5, title: "特殊页", url: "chrome://settings/" }
+  ]);
+}
+
+async function testExportFallsBackToCurrentWindow() {
+  const windowTabs = [
+    { id: 31, index: 0, title: "未分组页面", url: "https://example.com/a", groupId: -1, windowId: 3 },
+    { id: 32, index: 1, title: "特殊页面", url: "chrome://history/", groupId: -1, windowId: 3 },
+    { id: 33, index: 2, title: "没有网址", groupId: -1, windowId: 3 }
+  ];
+  const { context } = loadWorker({
+    tabs: {
+      query: async (details) => {
+        if (details?.active) {
+          return [windowTabs[0]];
+        }
+        return windowTabs;
+      }
+    }
+  });
+
+  const result = await context.getTabExportData();
+  assert.deepEqual(plain(result.scope), { type: "window", windowId: 3, title: "" });
+  assert.deepEqual(plain(result.tabs), [
+    { id: 31, index: 0, title: "未分组页面", url: "https://example.com/a" },
+    { id: 32, index: 1, title: "特殊页面", url: "chrome://history/" },
+    { id: 33, index: 2, title: "没有网址", url: "" }
+  ]);
+}
+
 async function testRollbackOnFailure() {
   let createCount = 0;
   const { context, calls } = loadWorker({
@@ -447,6 +510,8 @@ Promise.resolve()
   .then(testUngroupedTab)
   .then(testPinToFront)
   .then(testMergeTabGroupsDeduplicatesUrls)
+  .then(testExportCurrentGroupTabsInStripOrder)
+  .then(testExportFallsBackToCurrentWindow)
   .then(testRollbackOnFailure)
   .then(testArchiveCurrentGroupUsesSyncChunks)
   .then(testSyncFailureFallsBackToLocal)
