@@ -17,13 +17,14 @@
         </div>
       </section>
 
-      <details class="help-guide" open>
+      <details class="help-guide">
         <summary>怎么操作？</summary>
         <ol>
           <li>先切换到目标标签页，再点击工具栏上的插件按钮。</li>
           <li>单个标签组可以置顶、复制或存档；置顶会删除原组，存档会关闭原组。</li>
           <li>合并时点击“合并标签组并去重”，选择同一窗口中的至少两个标签组。</li>
           <li>导出时可选择当前标签组或当前窗口，并复制 YAML、Markdown 或 TXT 结果。</li>
+          <li>需要恢复时，粘贴之前导出的文本，确认识别结果后创建新的标签组。</li>
         </ol>
       </details>
 
@@ -34,11 +35,17 @@
         <button id="copyButton" type="button" title="保留原标签组，在右侧创建一个副本" disabled>
           一键复制
         </button>
+        <button id="sortButton" type="button" title="按完整 URL 升序排列当前标签组中的标签页" disabled>
+          按 URL 排序
+        </button>
         <button id="mergeButton" type="button" title="选择多个标签组，合并到第一个选中的标签组并去重" disabled>
           合并标签组并去重
         </button>
         <button id="exportButton" type="button" title="预览并复制当前标签组或窗口的标题和 URL">
           导出标签页
+        </button>
+        <button id="restoreButton" type="button" title="粘贴 YAML、Markdown 或 TXT，恢复为新的标签组">
+          从文本恢复
         </button>
         <label class="archive-destination" for="archiveFolderSelect">
           <span>存入</span>
@@ -99,6 +106,28 @@
         <div class="export-note">仅导出标签页标题和 URL，不包含网页正文；结果按标签栏顺序排列。</div>
       </section>
 
+      <section class="restore-section" id="restoreSection" hidden>
+        <div class="section-heading restore-heading">
+          <div>
+            <div class="section-title">从文本恢复</div>
+            <div class="sync-status" id="restoreDetected">粘贴后自动识别格式</div>
+          </div>
+          <button class="compact" id="cancelRestoreButton" type="button">取消</button>
+        </div>
+        <textarea id="restoreInput" class="restore-input" spellcheck="false" aria-label="待恢复的导出文本" placeholder="粘贴插件导出的 YAML、Markdown 或 TXT 文本"></textarea>
+        <div class="restore-summary" id="restoreSummary" role="status">等待粘贴导出文本</div>
+        <ul class="restore-preview-list" id="restorePreviewList"></ul>
+        <div class="restore-errors" id="restoreErrors" hidden></div>
+        <label class="restore-title" for="restoreTitleInput">
+          <span>新标签组名称</span>
+          <input id="restoreTitleInput" type="text" maxlength="100" placeholder="默认使用第一条记录的标题">
+        </label>
+        <button class="primary" id="confirmRestoreButton" type="button" disabled>
+          恢复标签页
+        </button>
+        <div class="restore-note">将在当前窗口创建一个新标签组；重复 URL 会按原文本保留。</div>
+      </section>
+
       <section class="archive-section">
         <div class="section-heading">
           <div>
@@ -113,6 +142,7 @@
     </main>
 
     <script src="export-format.js"></script>
+    <script src="import-format.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
