@@ -23,7 +23,9 @@ const state = {
   selectedMergeGroupIds: new Set(),
   mergeTitleTouched: false,
   exportData: null,
-  exportFormat: "markdown"
+  exportFormat: "markdown",
+  restoreDraft: null,
+  restoreTitleTouched: false
 };
 
 const groupColor = document.getElementById("groupColor");
@@ -33,6 +35,7 @@ const statusText = document.getElementById("status");
 const syncStatus = document.getElementById("syncStatus");
 const pinButton = document.getElementById("pinButton");
 const copyButton = document.getElementById("copyButton");
+const sortButton = document.getElementById("sortButton");
 const mergeButton = document.getElementById("mergeButton");
 const archiveButton = document.getElementById("archiveButton");
 const archiveFolderSelect = document.getElementById("archiveFolderSelect");
@@ -53,12 +56,23 @@ const exportFormatSelect = document.getElementById("exportFormatSelect");
 const exportPreview = document.getElementById("exportPreview");
 const copyExportButton = document.getElementById("copyExportButton");
 const cancelExportButton = document.getElementById("cancelExportButton");
+const restoreButton = document.getElementById("restoreButton");
+const restoreSection = document.getElementById("restoreSection");
+const restoreDetected = document.getElementById("restoreDetected");
+const restoreInput = document.getElementById("restoreInput");
+const restoreSummary = document.getElementById("restoreSummary");
+const restorePreviewList = document.getElementById("restorePreviewList");
+const restoreErrors = document.getElementById("restoreErrors");
+const restoreTitleInput = document.getElementById("restoreTitleInput");
+const confirmRestoreButton = document.getElementById("confirmRestoreButton");
+const cancelRestoreButton = document.getElementById("cancelRestoreButton");
 let storageRefreshTimer;
 let copyFeedbackTimer;
 
 document.addEventListener("DOMContentLoaded", initPopup);
 pinButton.addEventListener("click", () => runCurrentGroupAction("pin-current-tab-group", "正在置顶..."));
 copyButton.addEventListener("click", () => runCurrentGroupAction("duplicate-current-tab-group", "正在复制..."));
+sortButton.addEventListener("click", () => runCurrentGroupAction("sort-current-tab-group", "正在按 URL 排序..."));
 mergeButton.addEventListener("click", toggleMergeSection);
 cancelMergeButton.addEventListener("click", closeMergeSection);
 confirmMergeButton.addEventListener("click", mergeSelectedGroups);
@@ -73,6 +87,13 @@ exportFormatSelect.addEventListener("change", () => {
   renderExportPreview();
 });
 copyExportButton.addEventListener("click", copyExportPreview);
+restoreButton.addEventListener("click", toggleRestoreSection);
+cancelRestoreButton.addEventListener("click", closeRestoreSection);
+restoreInput.addEventListener("input", handleRestoreInput);
+restoreTitleInput.addEventListener("input", () => {
+  state.restoreTitleTouched = true;
+});
+confirmRestoreButton.addEventListener("click", restoreImportedTabs);
 archiveButton.addEventListener("click", () => {
   runCurrentGroupAction("archive-current-tab-group", "正在存档...", {
     folderId: archiveFolderSelect.value || null
@@ -140,6 +161,7 @@ async function runCurrentGroupAction(type, busyText, extra = {}) {
   }
 
   closeExportSection();
+  closeRestoreSection();
   await withBusyState(busyText, async () => {
     const response = await chrome.runtime.sendMessage({ type, ...extra });
     assertSuccessfulResponse(response);
@@ -263,6 +285,7 @@ async function toggleMergeSection() {
     return;
   }
   closeExportSection();
+  closeRestoreSection();
   await refreshMergeGroups({ silent: true });
   state.mergeTitleTouched = false;
   renderMergeGroups();
@@ -280,6 +303,7 @@ async function toggleExportSection() {
   }
 
   closeMergeSection();
+  closeRestoreSection();
   await withBusyState("正在读取标签页...", async () => {
     const response = await chrome.runtime.sendMessage({ type: "get-tab-export-data" });
     assertSuccessfulResponse(response, "无法读取标签页");
@@ -303,6 +327,123 @@ function closeExportSection() {
   copyExportButton.disabled = true;
   copyExportButton.textContent = "复制结果";
   syncButtons();
+}
+
+function toggleRestoreSection() {
+  if (state.busy) {
+    return;
+  }
+  if (!restoreSection.hidden) {
+    closeRestoreSection();
+    return;
+  }
+
+  closeMergeSection();
+  closeExportSection();
+  state.restoreDraft = null;
+  state.restoreTitleTouched = false;
+  restoreInput.value = "";
+  restoreTitleInput.value = "";
+  restoreSection.hidden = false;
+  renderRestoreDraft();
+  syncButtons();
+}
+
+function closeRestoreSection() {
+  if (state.busy) {
+    return;
+  }
+  restoreSection.hidden = true;
+  state.restoreDraft = null;
+  state.restoreTitleTouched = false;
+  restoreInput.value = "";
+  restoreTitleInput.value = "";
+  restoreDetected.textContent = "粘贴后自动识别格式";
+  restoreSummary.textContent = "";
+  restorePreviewList.textContent = "";
+  restoreErrors.textContent = "";
+  restoreErrors.hidden = true;
+  syncButtons();
+}
+
+function handleRestoreInput() {
+  state.restoreDraft = TabImportParser.parse(restoreInput.value);
+  state.restoreTitleTouched = false;
+  const firstTab = state.restoreDraft.tabs[0];
+  restoreTitleInput.value = firstTab?.title || (restoreInput.value.trim() ? "恢复的标签组" : "");
+  renderRestoreDraft();
+}
+
+function renderRestoreDraft() {
+  const draft = state.restoreDraft;
+  restorePreviewList.textContent = "";
+  restoreErrors.textContent = "";
+  restoreErrors.hidden = true;
+
+  if (!draft || !restoreInput.value.trim()) {
+    restoreDetected.textContent = "粘贴后自动识别格式";
+    restoreSummary.textContent = "等待粘贴导出文本";
+    confirmRestoreButton.textContent = "恢复标签页";
+    syncButtons();
+    return;
+  }
+
+  const formatLabel = TabImportParser.getFormatLabel(draft.format);
+  const errorCount = draft.errors.length;
+  restoreDetected.textContent = `识别格式：${formatLabel}`;
+  restoreSummary.textContent = draft.tabs.length > 0
+    ? `找到 ${draft.tabs.length} 个有效标签页${errorCount > 0 ? `，${errorCount} 个问题将被跳过` : ""}`
+    : `没有找到有效标签页${errorCount > 0 ? `，${errorCount} 个问题` : ""}`;
+
+  for (const tab of draft.tabs) {
+    const item = document.createElement("li");
+    const title = document.createElement("span");
+    title.className = "restore-tab-title";
+    title.textContent = tab.title || "未命名标签页";
+    const url = document.createElement("span");
+    url.className = "restore-tab-url";
+    url.textContent = tab.url;
+    item.append(title, url);
+    restorePreviewList.append(item);
+  }
+
+  if (errorCount > 0) {
+    restoreErrors.hidden = false;
+    restoreErrors.textContent = [
+      "解析问题：",
+      ...draft.errors.map((error) => `${error.line ? `第 ${error.line} 行：` : ""}${error.message}`)
+    ].join("\n");
+  }
+
+  confirmRestoreButton.textContent = errorCount > 0 ? "恢复有效标签页" : "恢复标签页";
+  syncButtons();
+}
+
+async function restoreImportedTabs() {
+  const draft = state.restoreDraft;
+  if (state.busy || !draft?.tabs?.length) {
+    return;
+  }
+
+  let succeeded = false;
+  await withBusyState("正在恢复标签页...", async () => {
+    const response = await chrome.runtime.sendMessage({
+      type: "restore-tabs-from-text",
+      tabs: draft.tabs,
+      title: restoreTitleInput.value.trim()
+    });
+    assertSuccessfulResponse(response);
+    await Promise.all([
+      refreshCurrentGroup(),
+      refreshMergeGroups({ silent: true })
+    ]);
+    succeeded = true;
+    setStatus(response.message || "已恢复标签页", "success");
+  });
+
+  if (succeeded) {
+    closeRestoreSection();
+  }
 }
 
 function renderExportPreview() {
@@ -644,6 +785,7 @@ async function createFolder() {
 
 async function runLibraryAction(message, busyText) {
   closeExportSection();
+  closeRestoreSection();
   await withBusyState(busyText, async () => {
     const response = await chrome.runtime.sendMessage(message);
     assertSuccessfulResponse(response);
@@ -670,8 +812,10 @@ function syncButtons() {
   const currentGroupDisabled = !state.hasGroup || state.busy;
   pinButton.disabled = currentGroupDisabled;
   copyButton.disabled = currentGroupDisabled;
+  sortButton.disabled = currentGroupDisabled;
   mergeButton.disabled = state.busy || state.tabGroups.length < 2;
   exportButton.disabled = state.busy;
+  restoreButton.disabled = state.busy;
   archiveButton.disabled = currentGroupDisabled;
   archiveFolderSelect.disabled = state.busy;
   createFolderButton.disabled = state.busy;
@@ -684,6 +828,10 @@ function syncButtons() {
   exportFormatSelect.disabled = state.busy || !state.exportData;
   exportPreview.disabled = state.busy || !state.exportData;
   copyExportButton.disabled = state.busy || !state.exportData?.tabs?.length || !exportPreview.value;
+  cancelRestoreButton.disabled = state.busy;
+  restoreInput.disabled = state.busy;
+  restoreTitleInput.disabled = state.busy || !state.restoreDraft;
+  confirmRestoreButton.disabled = state.busy || !state.restoreDraft?.tabs?.length;
   mergeGroupList.querySelectorAll("input[data-group-id]").forEach((control) => {
     control.disabled = state.busy;
   });

@@ -11,6 +11,7 @@ const SYNC_QUOTA_BYTES = 102400;
 const MAX_ARCHIVES = 100;
 const MAX_FOLDERS = 30;
 const MAX_FOLDER_NAME_LENGTH = 40;
+const RESTORE_BLOCKED_PROTOCOLS = new Set(["javascript:", "data:", "vbscript:", "blob:"]);
 
 let migrationPromise;
 
@@ -106,6 +107,15 @@ async function handleMessage(message) {
     return { ok: true, ...(await getTabExportData()) };
   }
 
+  if (message.type === "restore-tabs-from-text") {
+    const result = await restoreImportedTabs(message);
+    return {
+      ok: true,
+      result,
+      message: `已恢复 ${result.tabCount} 个标签页为“${result.title}”`
+    };
+  }
+
   const activeTab = await getActiveTab();
 
   if (message.type === "duplicate-current-tab-group") {
@@ -116,6 +126,19 @@ async function handleMessage(message) {
   if (message.type === "pin-current-tab-group") {
     const result = await pinTabGroupToFront(activeTab);
     return result ? { ok: true, message: "已置顶标签组" } : { ok: false, error: "当前没有标签组" };
+  }
+
+  if (message.type === "sort-current-tab-group") {
+    const result = await sortCurrentTabGroup(activeTab);
+    if (!result) {
+      return { ok: false, error: "当前没有标签组" };
+    }
+    return {
+      ok: true,
+      message: result.changed
+        ? `已按 URL 排序 ${result.tabCount} 个标签页`
+        : "当前标签组已经按 URL 排序"
+    };
   }
 
   if (message.type === "archive-current-tab-group") {
@@ -154,6 +177,44 @@ async function pinTabGroupToFront(activeTab) {
   await chrome.tabs.remove(result.sourceTabIds);
   await showBadge("✓", "#188038", result.activeCreatedTabId);
   return result;
+}
+
+async function sortCurrentTabGroup(activeTab) {
+  if (!activeTab || activeTab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    return null;
+  }
+
+  const group = await chrome.tabGroups.get(activeTab.groupId);
+  const tabs = sortTabsByIndex(await chrome.tabs.query({
+    groupId: group.id,
+    windowId: group.windowId
+  }));
+  if (tabs.length === 0) {
+    throw new Error("当前标签组中没有可排序的标签页");
+  }
+
+  const sortedTabs = [...tabs].sort((left, right) => {
+    const leftUrl = left.pendingUrl || left.url || "";
+    const rightUrl = right.pendingUrl || right.url || "";
+    return leftUrl.localeCompare(rightUrl, "en", { sensitivity: "base", numeric: true })
+      || left.index - right.index;
+  });
+  const changed = sortedTabs.some((tab, index) => tab.id !== tabs[index].id);
+
+  if (changed) {
+    const firstIndex = tabs[0].index;
+    for (let offset = 0; offset < sortedTabs.length; offset += 1) {
+      await chrome.tabs.move(sortedTabs[offset].id, {
+        windowId: group.windowId,
+        index: firstIndex + offset
+      });
+    }
+    if (group.collapsed) {
+      await chrome.tabGroups.update(group.id, { collapsed: true });
+    }
+  }
+
+  return { groupId: group.id, tabCount: tabs.length, changed };
 }
 
 async function getTabGroupsForWindow(windowId) {
@@ -240,6 +301,86 @@ async function getTabExportData() {
       url: tab.pendingUrl || tab.url || ""
     }))
   };
+}
+
+async function restoreImportedTabs(message = {}) {
+  const tabs = normalizeImportedTabs(message.tabs);
+  const activeTab = await getActiveTab({ required: false });
+  const windowId = message.windowId ?? activeTab?.windowId;
+  if (windowId === undefined || windowId === null) {
+    throw new Error("没有找到当前浏览器窗口");
+  }
+
+  const title = normalizeImportedGroupTitle(message.title, tabs[0].title);
+  const insertionIndex = activeTab?.windowId === windowId ? activeTab.index + 1 : undefined;
+  const createdTabIds = [];
+
+  try {
+    for (let offset = 0; offset < tabs.length; offset += 1) {
+      const createProperties = {
+        windowId,
+        index: insertionIndex === undefined ? undefined : insertionIndex + offset,
+        url: tabs[offset].url,
+        active: false
+      };
+      if (createProperties.index === undefined) {
+        delete createProperties.index;
+      }
+      const createdTab = await chrome.tabs.create(createProperties);
+      if (!createdTab?.id) {
+        throw new Error(`第 ${offset + 1} 个标签页创建失败`);
+      }
+      createdTabIds.push(createdTab.id);
+    }
+
+    const newGroupId = await chrome.tabs.group({
+      tabIds: createdTabIds,
+      createProperties: { windowId }
+    });
+    await chrome.tabGroups.update(newGroupId, { title });
+    await chrome.tabs.update(createdTabIds[0], { active: true });
+    await showBadge("恢", "#188038", createdTabIds[0]);
+    return { newGroupId, createdTabIds, tabCount: createdTabIds.length, title, windowId };
+  } catch (error) {
+    if (createdTabIds.length > 0) {
+      await chrome.tabs.remove(createdTabIds).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+function normalizeImportedTabs(tabs) {
+  if (!Array.isArray(tabs) || tabs.length === 0) {
+    throw new Error("没有可恢复的标签页");
+  }
+
+  return tabs.map((tab, index) => {
+    const url = String(tab?.url ?? "").trim();
+    if (!isRestorableUrl(url)) {
+      throw new Error(`第 ${index + 1} 个标签页的 URL 无效或不受支持`);
+    }
+    return {
+      title: String(tab?.title ?? "").replace(/\r\n?|\n/g, " ").trim(),
+      url
+    };
+  });
+}
+
+function isRestorableUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return Boolean(parsed.protocol) && !RESTORE_BLOCKED_PROTOCOLS.has(parsed.protocol.toLowerCase());
+  } catch (error) {
+    return false;
+  }
+}
+
+function normalizeImportedGroupTitle(title, fallbackTitle) {
+  const cleanTitle = String(title ?? "").trim() || String(fallbackTitle ?? "").trim() || "恢复的标签组";
+  if (cleanTitle.length > 100) {
+    throw new Error("标签组名称不能超过 100 个字符");
+  }
+  return cleanTitle;
 }
 
 async function mergeTabGroups(message = {}) {

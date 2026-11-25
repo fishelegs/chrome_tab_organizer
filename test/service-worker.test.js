@@ -77,7 +77,8 @@ function loadWorker(overrides = {}) {
   const context = vm.createContext({
     chrome,
     console: { ...console, warn() {} },
-    setTimeout() {}
+    setTimeout() {},
+    URL
   });
   const source = fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8");
   vm.runInContext(source, context);
@@ -313,6 +314,48 @@ async function testExportFallsBackToCurrentWindow() {
   ]);
 }
 
+async function testRestoreImportedTabsCreatesNewGroup() {
+  const { context, calls } = loadWorker();
+  const result = await context.restoreImportedTabs({
+    title: "恢复资料",
+    tabs: [
+      { title: "第一页", url: "https://example.com/one" },
+      { title: "设置", url: "chrome://settings/" }
+    ]
+  });
+
+  assert.equal(result.newGroupId, 8);
+  assert.equal(result.tabCount, 2);
+  assert.equal(result.title, "恢复资料");
+  assert.deepEqual(plain(calls.filter(([name]) => name === "create")), [
+    ["create", { windowId: 3, index: 4, url: "https://example.com/one", active: false }],
+    ["create", { windowId: 3, index: 5, url: "chrome://settings/", active: false }]
+  ]);
+  assert.deepEqual(plain(calls.find(([name]) => name === "group")), [
+    "group",
+    { tabIds: [101, 102], createProperties: { windowId: 3 } }
+  ]);
+  assert.deepEqual(plain(calls.find(([name]) => name === "update")), [
+    "update",
+    8,
+    { title: "恢复资料" }
+  ]);
+  assert.deepEqual(plain(calls.find(([name, id]) => name === "tabUpdate" && id === 101)), [
+    "tabUpdate",
+    101,
+    { active: true }
+  ]);
+}
+
+async function testRestoreImportedTabsRejectsDangerousUrl() {
+  const { context, calls } = loadWorker();
+  await assert.rejects(
+    context.restoreImportedTabs({ tabs: [{ title: "危险", url: "javascript:alert(1)" }] }),
+    /无效或不受支持/
+  );
+  assert.equal(calls.some(([name]) => name === "create"), false);
+}
+
 async function testRollbackOnFailure() {
   let createCount = 0;
   const { context, calls } = loadWorker({
@@ -512,6 +555,8 @@ Promise.resolve()
   .then(testMergeTabGroupsDeduplicatesUrls)
   .then(testExportCurrentGroupTabsInStripOrder)
   .then(testExportFallsBackToCurrentWindow)
+  .then(testRestoreImportedTabsCreatesNewGroup)
+  .then(testRestoreImportedTabsRejectsDangerousUrl)
   .then(testRollbackOnFailure)
   .then(testArchiveCurrentGroupUsesSyncChunks)
   .then(testSyncFailureFallsBackToLocal)
